@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: walk
+      POSTGRES_PASSWORD: walk
+      POSTGRES_DB: walkroutes
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U walk -d walkroutes"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://walk:walk@db:5432/walkroutes
+      ROUTING_URL: https://routing.openstreetmap.de/routed-foot
+    ports:
+      - "3000:3000"
+    volumes:
+      # фронтенд подхватывается без пересборки образа
+      - ./backend/public:/app/public
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

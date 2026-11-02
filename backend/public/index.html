@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WalkRoutes — маршруты для прогулок по Беларуси</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; height: 100vh; color: #111827; }
+    #sidebar { width: 360px; padding: 20px; overflow-y: auto; border-right: 1px solid #e5e7eb; background: #fff; z-index: 2; }
+    #map { flex: 1; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    .hint { color: #6b7280; font-size: 13px; margin: 0 0 12px; }
+    label { font-size: 14px; display: block; margin: 8px 0; }
+    input[type=text] { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    .search-wrap { position: relative; margin-bottom: 8px; }
+    .search { display: flex; gap: 6px; }
+    .search button { padding: 0 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 14px; }
+    #suggest { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); max-height: 60vh; overflow-y: auto; z-index: 20; }
+    #suggest[hidden] { display: none; }
+    .s-group { padding: 8px 12px 4px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #6b7280; }
+    .s-item { padding: 8px 12px; cursor: pointer; }
+    .s-item:hover, .s-item.active { background: #eff6ff; }
+    .s-title { font-size: 14px; font-weight: 600; }
+    .s-sub { font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .s-msg { padding: 12px; font-size: 13px; color: #6b7280; }
+    ol { padding-left: 22px; margin: 12px 0; }
+    li { margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+    li button { border: 0; background: none; cursor: pointer; font-size: 18px; color: #6b7280; }
+    .btn { width: 100%; padding: 11px; margin-top: 8px; border: 0; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    .primary { background: #2563eb; color: #fff; }
+    .primary:hover { background: #1d4ed8; }
+    .secondary { background: #f3f4f6; color: #111827; }
+    .secondary:hover { background: #e5e7eb; }
+    #stats { margin-top: 14px; font-weight: 600; font-size: 15px; }
+    #error { margin-top: 12px; color: #b91c1c; font-size: 14px; }
+    .legend { display: flex; gap: 10px 12px; flex-wrap: wrap; font-size: 12px; color: #4b5563; margin-bottom: 12px; }
+    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; background: var(--c); }
+    .pin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: pointer; }
+    .pin.selected { border-color: #111827; box-shadow: 0 0 0 3px rgba(17,24,39,.25); }
+    .num { width: 28px; height: 28px; border-radius: 50%; background: #2563eb; color: #fff; border: 3px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.45); text-align: center; line-height: 22px; font-size: 13px; font-weight: 700; }
+    @media (max-width: 700px) {
+      body { flex-direction: column-reverse; }
+      #sidebar { width: 100%; height: 45vh; border-right: 0; border-top: 1px solid #e5e7eb; }
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h1>Маршрут прогулки</h1>
+    <p class="hint">Найди место, кликай по маркерам или по карте, чтобы добавить точки.</p>
+    <div class="legend">
+      <span style="--c:#2563eb">Места</span>
+      <span style="--c:#7c3aed">Музеи</span>
+      <span style="--c:#16a34a">Парки</span>
+      <span style="--c:#b45309">Замки</span>
+      <span style="--c:#dc2626">Памятники</span>
+      <span style="--c:#0891b2">Храмы</span>
+      <span style="--c:#ca8a04">Смотровые</span>
+    </div>
+    <div class="search-wrap">
+      <div class="search">
+        <input type="text" id="q" placeholder="Поиск: например, дом музей" autocomplete="off">
+        <button id="find">Найти</button>
+      </div>
+      <div id="suggest" hidden></div>
+    </div>
+    <ol id="list"></ol>
+    <label><input type="checkbox" id="optimize" checked> Оптимизировать порядок точек</label>
+    <button class="btn primary" id="build">Построить маршрут</button>
+    <button class="btn secondary" id="clear">Очистить</button>
+    <div id="stats"></div>
+    <div id="error"></div>
+  </div>
+  <div id="map"></div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+  <script>
+    // Публичный токен Mapbox (pk....) из https://account.mapbox.com/
+    const MAPBOX_TOKEN = 'pk.eyJ1IjoibmV5dWFyYSIsImEiOiJjbXZvdzR3dm8wZTljMnlyMDFvMmVmZnhoIn0.MhnY-hut1qYsgRI1i8mVsA';
+
+    const COLORS = {
+      sight: '#2563eb', museum: '#7c3aed', park: '#16a34a',
+      castle: '#b45309', monument: '#dc2626', church: '#0891b2', viewpoint: '#ca8a04',
+    };
+    const CATEGORY_NAMES = {
+      sight: 'Достопримечательность', museum: 'Музей', park: 'Парк',
+      castle: 'Замок, крепость или усадьба', monument: 'Памятник или мемориал',
+      church: 'Храм или монастырь', viewpoint: 'Смотровая площадка',
+    };
+
+    const listEl = document.getElementById('list');
+    const statsEl = document.getElementById('stats');
+    const errorEl = document.getElementById('error');
+    const inputEl = document.getElementById('q');
+    const suggestEl = document.getElementById('suggest');
+
+    if (!MAPBOX_TOKEN.startsWith('pk.')) {
+      errorEl.textContent = 'Вставь токен Mapbox в константу MAPBOX_TOKEN (начинается с pk.)';
+      throw new Error('No Mapbox token');
+    }
+
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [27.9, 53.7],
+      zoom: 6,
+    });
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.addControl(new mapboxgl.GeolocateControl({ positionOptions: { enableHighAccuracy: true } }), 'top-right');
+    map.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+    // Подписи на русском, если есть name_ru
+    map.on('style.load', () => {
+      map.getStyle().layers.forEach((l) => {
+        if (l.type === 'symbol' && l.layout && l.layout['text-field'] && /label/.test(l.id)) {
+          try {
+            map.setLayoutProperty(l.id, 'text-field', ['coalesce', ['get', 'name_ru'], ['get', 'name']]);
+          } catch (e) { /* пропускаем слои со сложными подписями */ }
+        }
+      });
+    });
+
+    let selected = [];
+    let placesData = [];
+    let placeMarkers = [];
+    let numberMarkers = [];
+
+    function render() {
+      listEl.innerHTML = '';
+      selected.forEach((p, i) => {
+        const li = document.createElement('li');
+        const span = document.createElement('span');
+        span.textContent = (i + 1) + '. ' + p.name;
+        const btn = document.createElement('button');
+        btn.textContent = '×';
+        btn.onclick = () => { selected.splice(i, 1); render(); };
+        li.append(span, btn);
+        listEl.append(li);
+      });
+      placeMarkers.forEach((m) => m.el.classList.toggle('selected', selected.some((s) => s.id === m.id)));
+    }
+
+    function addPoint(p) {
+      if (p.id && selected.some((s) => s.id === p.id)) return;
+      selected.push(p);
+      render();
+    }
+
+    function clearRoute() {
+      ['route-line', 'route-casing'].forEach((id) => { if (map.getLayer(id)) map.removeLayer(id); });
+      if (map.getSource('route')) map.removeSource('route');
+      numberMarkers.forEach((m) => m.remove());
+      numberMarkers = [];
+      statsEl.textContent = '';
+      errorEl.textContent = '';
+    }
+
+    // ---------- Поиск ----------
+
+    let suggestItems = [];
+    let activeIdx = -1;
+    let searchAbort = null;
+    let searchTimer = null;
+    let serverSearch = true; // отключается, если на сервере нет /api/v1/places/search
+
+    function norm(s) {
+      return (s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+    }
+
+    // Поиск по уже загруженным местам: все слова запроса должны встречаться в названии
+    function localSearch(q) {
+      const nq = norm(q);
+      const tokens = nq.split(' ');
+      return placesData
+        .map((p) => ({ p, n: norm(p.name) }))
+        .filter((x) => tokens.every((t) => x.n.includes(t)))
+        .sort((a, b) => (b.n.startsWith(nq) - a.n.startsWith(nq)) || a.n.length - b.n.length)
+        .slice(0, 8)
+        .map((x) => x.p);
+    }
+
+    async function serverSearchPlaces(q, signal) {
+      if (!serverSearch) return null;
+      const c = map.getCenter();
+      const url = '/api/v1/places/search?q=' + encodeURIComponent(q) +
+        '&limit=8&lat=' + c.lat + '&lng=' + c.lng;
+      const r = await fetch(url, { signal });
+      if (r.status === 404) { serverSearch = false; return null; }
+      if (!r.ok) return null;
+      return r.json();
+    }
+
+    // Объекты и адреса на карте (Mapbox Geocoding), до 5 вариантов
+    async function geocodeSuggest(q, signal) {
+      const c = map.getCenter();
+      const url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/' + encodeURIComponent(q) + '.json' +
+        '?access_token=' + MAPBOX_TOKEN +
+        '&country=by&language=ru&limit=5&autocomplete=true' +
+        '&proximity=' + c.lng + ',' + c.lat;
+      const r = await fetch(url, { signal });
+      if (!r.ok) throw new Error('Геокодер: ошибка ' + r.status);
+      const d = await r.json();
+      return (d.features || []).map((f) => ({
+        title: f.text,
+        subtitle: f.place_name,
+        lng: f.center[0],
+        lat: f.center[1],
+      }));
+    }
+
+    function closeSuggest() {
+      suggestEl.hidden = true;
+      activeIdx = -1;
+    }
+
+    function setActive(i) {
+      const rows = suggestEl.querySelectorAll('.s-item');
+      rows.forEach((r) => r.classList.remove('active'));
+      activeIdx = i;
+      if (i >= 0 && rows[i]) {
+        rows[i].classList.add('active');
+        rows[i].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function renderSuggest(items, message) {
+      suggestEl.innerHTML = '';
+      suggestItems = items;
+      activeIdx = -1;
+      if (!items.length) {
+        const d = document.createElement('div');
+        d.className = 's-msg';
+        d.textContent = message || 'Ничего не найдено';
+        suggestEl.append(d);
+        suggestEl.hidden = false;
+        return;
+      }
+      let lastGroup = null;
+      items.forEach((it, i) => {
+        if (it.group !== lastGroup) {
+          const g = document.createElement('div');
+          g.className = 's-group';
+          g.textContent = it.group;
+          suggestEl.append(g);
+          lastGroup = it.group;
+        }
+        const row = document.createElement('div');
+        row.className = 's-item';
+        const t = document.createElement('div');
+        t.className = 's-title';
+        t.textContent = it.title;
+        const s = document.createElement('div');
+        s.className = 's-sub';
+        s.textContent = it.subtitle || '';
+        row.append(t, s);
+        row.addEventListener('mousedown', (e) => { e.preventDefault(); choose(i); });
+        suggestEl.append(row);
+      });
+      suggestEl.hidden = false;
+    }
+
+    function choose(i) {
+      const it = suggestItems[i];
+      if (!it) return;
+      addPoint(it.data);
+      map.flyTo({ center: [it.data.lng, it.data.lat], zoom: 15 });
+      inputEl.value = it.title;
+      closeSuggest();
+    }
+
+    async function runSearch(q) {
+      if (searchAbort) searchAbort.abort();
+      searchAbort = new AbortController();
+      const signal = searchAbort.signal;
+      errorEl.textContent = '';
+
+      suggestEl.innerHTML = '';
+      const loading = document.createElement('div');
+      loading.className = 's-msg';
+      loading.textContent = 'Поиск…';
+      suggestEl.append(loading);
+      suggestEl.hidden = false;
+
+      const [cat, geo] = await Promise.allSettled([
+        (async () => (await serverSearchPlaces(q, signal)) || localSearch(q))(),
+        geocodeSuggest(q, signal),
+      ]);
+      if (signal.aborted) return;
+
+      const items = [];
+      const titles = new Set();
+
+      if (cat.status === 'fulfilled') {
+        cat.value.forEach((p) => {
+          titles.add(norm(p.name));
+          items.push({
+            group: 'Места из каталога',
+            title: p.name,
+            subtitle: CATEGORY_NAMES[p.category] || p.description || '',
+            data: { id: p.id, name: p.name, lat: p.lat, lng: p.lng },
+          });
+        });
+      }
+      if (geo.status === 'fulfilled') {
+        geo.value.forEach((g) => {
+          if (titles.has(norm(g.title))) return;
+          items.push({
+            group: 'Адреса и объекты на карте',
+            title: g.title,
+            subtitle: g.subtitle,
+            data: { name: g.title, lat: g.lat, lng: g.lng },
+          });
+        });
+      }
+
+      const bothFailed = cat.status === 'rejected' && geo.status === 'rejected';
+      renderSuggest(items, bothFailed ? 'Не удалось выполнить поиск' : 'Ничего не найдено');
+    }
+
+    inputEl.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = inputEl.value.trim();
+      if (q.length < 2) {
+        if (searchAbort) searchAbort.abort();
+        closeSuggest();
+        return;
+      }
+      searchTimer = setTimeout(() => runSearch(q), 300);
+    });
+
+    inputEl.addEventListener('keydown', (e) => {
+      const n = suggestItems.length;
+      if (e.key === 'ArrowDown' && !suggestEl.hidden && n) {
+        e.preventDefault();
+        setActive((activeIdx + 1) % n);
+      } else if (e.key === 'ArrowUp' && !suggestEl.hidden && n) {
+        e.preventDefault();
+        setActive((activeIdx - 1 + n) % n);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!suggestEl.hidden && activeIdx >= 0) choose(activeIdx);
+        else if (inputEl.value.trim().length >= 2) { clearTimeout(searchTimer); runSearch(inputEl.value.trim()); }
+      } else if (e.key === 'Escape') {
+        closeSuggest();
+      }
+    });
+
+    inputEl.addEventListener('focus', () => {
+      if (suggestItems.length && inputEl.value.trim().length >= 2) suggestEl.hidden = false;
+    });
+
+    document.getElementById('find').onclick = () => {
+      const q = inputEl.value.trim();
+      if (q.length >= 2) { clearTimeout(searchTimer); runSearch(q); }
+    };
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.search-wrap')) closeSuggest();
+    });
+
+    // ---------- Места на карте ----------
+
+    fetch('/api/v1/places')
+      .then((r) => r.json())
+      .then((places) => {
+        placesData = places;
+        places.forEach((p) => {
+          const el = document.createElement('div');
+          el.className = 'pin';
+          el.title = p.name;
+          el.style.background = COLORS[p.category] || COLORS.sight;
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            addPoint({ id: p.id, name: p.name, lat: p.lat, lng: p.lng });
+          });
+          new mapboxgl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(map);
+          placeMarkers.push({ id: p.id, el });
+        });
+      })
+      .catch(() => { errorEl.textContent = 'Не удалось загрузить места'; });
+
+    map.on('click', (e) => {
+      closeSuggest();
+      const { lat, lng } = e.lngLat;
+      addPoint({ name: 'Точка (' + lat.toFixed(4) + ', ' + lng.toFixed(4) + ')', lat, lng });
+    });
+
+    // ---------- Маршрут ----------
+
+    document.getElementById('build').onclick = async () => {
+      clearRoute();
+      if (selected.length < 2) { errorEl.textContent = 'Выбери минимум 2 точки'; return; }
+
+      try {
+        const res = await fetch('/api/v1/routes/build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            points: selected,
+            optimize: document.getElementById('optimize').checked,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка');
+
+        selected = data.points;
+        render();
+
+        map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: data.geometry } });
+        map.addLayer({
+          id: 'route-casing', type: 'line', source: 'route',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#ffffff', 'line-width': 9 },
+        });
+        map.addLayer({
+          id: 'route-line', type: 'line', source: 'route',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#2563eb', 'line-width': 5 },
+        });
+
+        const bounds = new mapboxgl.LngLatBounds();
+        data.geometry.coordinates.forEach((c) => bounds.extend(c));
+        map.fitBounds(bounds, { padding: 70, maxZoom: 16 });
+
+        data.points.forEach((p, i) => {
+          const el = document.createElement('div');
+          el.className = 'num';
+          el.textContent = i + 1;
+          numberMarkers.push(new mapboxgl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(map));
+        });
+
+        const km = (data.distance_m / 1000).toFixed(1);
+        const h = Math.floor(data.duration_s / 3600);
+        const m = Math.round((data.duration_s % 3600) / 60);
+        statsEl.textContent = km + ' км · ' + (h ? h + ' ч ' : '') + m + ' мин пешком';
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+
+    document.getElementById('clear').onclick = () => {
+      selected = [];
+      render();
+      clearRoute();
+    };
+  </script>
+</body>
+</html>
